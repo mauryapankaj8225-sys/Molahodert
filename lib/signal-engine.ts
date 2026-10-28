@@ -1,6 +1,5 @@
-import type { Analysis, Candle, Direction, Factor, Indicators, Setup, SignalEvent } from './market-types'
+import { BAR_MS, BARS, type Analysis, type Bar, type Candle, type Direction, type Factor, type Indicators, type MtfAlignment, type MtfState, type Setup, type SignalEvent } from './market-types'
 
-export const SIGNAL_INTERVAL = 15 * 60 * 1000
 export const CONFIRMATION_BARS = 3
 export const SETUP_LIFETIME_BARS = 8
 const WARMUP = 100
@@ -53,33 +52,35 @@ export function indicators(candles: Candle[]): Indicators | null {
   return { ema21, ema50, rsi, atr, vwap, macd, score, factors }
 }
 
-export function analyze(candles: Candle[], tick: number, now: number): Analysis {
-  const empty: Analysis = { indicators: null, setup: null, confirmations: 0, candidate: 'NEUTRAL', lastClose: null, history: [], error: null }
-  const closed = candles.filter(c => c.confirmed && c.time + SIGNAL_INTERVAL <= now)
-  if (closed.length < WARMUP + 3) return { ...empty, error: 'Waiting for at least 103 verified, closed 15m candles.' }
+const emptyAnalysis = (bar: Bar, error: string | null = null): Analysis => ({ bar, indicators: null, setup: null, confirmations: 0, candidate: 'NEUTRAL', lastClose: null, history: [], error })
+
+export function analyze(candles: Candle[], bar: Bar, tick: number, now: number): Analysis {
+  const interval = BAR_MS[bar]
+  const closed = candles.filter(c => c.confirmed && c.time + interval <= now)
+  if (closed.length < WARMUP + 3) return emptyAnalysis(bar, `Waiting for at least ${WARMUP + 3} verified, closed ${bar} candles.`)
   for (let i = 0; i < closed.length; i++) {
     const c = closed[i]
-    if (![c.time, c.open, c.high, c.low, c.close, c.volume].every(Number.isFinite) || c.low <= 0 || c.volume < 0 || c.high < Math.max(c.open, c.close) || c.low > Math.min(c.open, c.close) || (i > 0 && c.time - closed[i - 1].time !== SIGNAL_INTERVAL)) return { ...empty, error: 'Candle integrity check failed. Signals blocked.' }
+    if (![c.time, c.open, c.high, c.low, c.close, c.volume].every(Number.isFinite) || c.low <= 0 || c.volume < 0 || c.high < Math.max(c.open, c.close) || c.low > Math.min(c.open, c.close) || (i > 0 && c.time - closed[i - 1].time !== interval)) return emptyAnalysis(bar, 'Candle integrity check failed. Signals blocked.')
   }
-  const lastClose = closed.at(-1)!.time + SIGNAL_INTERVAL
-  if (now - lastClose > SIGNAL_INTERVAL + 20_000) return { ...empty, lastClose, error: 'Closed-candle feed is stale. Signals blocked.' }
-  if (!(tick > 0)) return { ...empty, lastClose, error: 'Exchange tick size is not verified.' }
-  // Replay from a UTC-day boundary so browser refreshes do not reset intraday locks.
+  const lastClose = closed.at(-1)!.time + interval
+  if (now - lastClose > interval + 20_000) return { ...emptyAnalysis(bar, 'Closed-candle feed is stale. Signals blocked.'), lastClose }
+  if (!(tick > 0)) return { ...emptyAnalysis(bar, 'Exchange tick size is not verified.'), lastClose }
+  // Replay from a UTC-day boundary so refreshes never rewrite an already-locked setup.
   const sessionStart = Math.floor(now / 86_400_000) * 86_400_000
   let setup: Setup | null = null
   let candidate: Direction = 'NEUTRAL', confirmations = 0, cooldown = 0
   const history: SignalEvent[] = []
   for (let i = WARMUP - 1; i < closed.length; i++) {
-    const bar = closed[i], closeTime = bar.time + SIGNAL_INTERVAL
+    const barCandle = closed[i], closeTime = barCandle.time + interval
     if (closeTime < sessionStart) continue
     const data = indicators(closed.slice(i - WARMUP + 1, i + 1))
     if (!data) { setup = null; confirmations = 0; continue }
     if (setup) {
-      const invalid = setup.direction === 'LONG' ? bar.low <= setup.stop : bar.high >= setup.stop
-      const target = setup.direction === 'LONG' ? bar.high >= setup.target2 : bar.low <= setup.target2
+      const invalid = setup.direction === 'LONG' ? barCandle.low <= setup.stop : barCandle.high >= setup.stop
+      const target = setup.direction === 'LONG' ? barCandle.high >= setup.target2 : barCandle.low <= setup.target2
       const expired = closeTime >= setup.expires
       if (invalid || target || expired) {
-        history.push({ time: closeTime, type: invalid ? 'INVALIDATED' : expired ? 'EXPIRED' : 'TARGET REACHED', direction: setup.direction, entry: setup.entry })
+        history.push({ time: closeTime, type: invalid ? 'INVALIDATED' : expired ? 'EXPIRED' : 'TARGET REACHED', direction: setup.direction, entry: setup.entry, bar })
         setup = null; cooldown = 3; confirmations = 0; candidate = 'NEUTRAL'
       }
       continue
@@ -91,13 +92,37 @@ export function analyze(candles: Candle[], tick: number, now: number): Analysis 
     if (confirmations < CONFIRMATION_BARS || candidate === 'NEUTRAL') continue
     const long = candidate === 'LONG'
     const entry = tickRound(data.ema21, tick, long ? 'floor' : 'ceil')
-    if (Math.abs(entry - bar.close) > data.atr || (long ? entry >= bar.close : entry <= bar.close)) continue
+    if (Math.abs(entry - barCandle.close) > data.atr || (long ? entry >= barCandle.close : entry <= barCandle.close)) continue
     const structure = closed.slice(i - 4, i + 1)
     const stop = tickRound(long ? Math.min(entry - data.atr * 1.5, Math.min(...structure.map(c => c.low)) - data.atr * 0.25) : Math.max(entry + data.atr * 1.5, Math.max(...structure.map(c => c.high)) + data.atr * 0.25), tick, long ? 'floor' : 'ceil')
     const risk = Math.abs(entry - stop), sign = long ? 1 : -1
     if (risk < tick * 2 || risk > data.atr * 3) continue
-    setup = { id: `${closeTime}-${candidate}`, direction: candidate, time: closeTime, expires: Math.min(closeTime + SETUP_LIFETIME_BARS * SIGNAL_INTERVAL, sessionStart + 86_400_000), entry, stop, target1: tickRound(entry + sign * risk * 1.5, tick), target2: tickRound(entry + sign * risk * 2.5, tick), zoneLow: tickRound(entry - data.atr * 0.1, tick, 'floor'), zoneHigh: tickRound(entry + data.atr * 0.1, tick, 'ceil'), strength: Math.abs(data.score) }
-    history.push({ time: closeTime, type: 'CONFIRMED', direction: candidate, entry })
+    // Locked once, never rewritten: id and levels are fixed by the confirmation close time.
+    setup = { id: `${bar}-${closeTime}-${candidate}`, bar, direction: candidate, time: closeTime, lockedAt: Date.now(), expires: Math.min(closeTime + SETUP_LIFETIME_BARS * interval, sessionStart + 86_400_000), entry, stop, target1: tickRound(entry + sign * risk * 1.5, tick), target2: tickRound(entry + sign * risk * 2.5, tick), zoneLow: tickRound(entry - data.atr * 0.1, tick, 'floor'), zoneHigh: tickRound(entry + data.atr * 0.1, tick, 'ceil'), strength: Math.abs(data.score), immutable: true }
+    history.push({ time: closeTime, type: 'CONFIRMED', direction: candidate, entry, bar })
   }
-  return { indicators: indicators(closed), setup, candidate, confirmations: Math.min(confirmations, 3), lastClose, history: history.slice(-12).reverse(), error: null }
+  return { bar, indicators: indicators(closed), setup, candidate, confirmations: Math.min(confirmations, 3), lastClose, history: history.slice(-12).reverse(), error: null }
+}
+
+export function alignment(analyses: Record<Bar, Analysis>): MtfAlignment {
+  let longVotes = 0, shortVotes = 0, neutralVotes = 0
+  const lockedBars: Bar[] = []
+  for (const bar of BARS) {
+    const analysis = analyses[bar]
+    if (!analysis) { neutralVotes++; continue }
+    const direction = analysis.setup?.direction ?? analysis.candidate
+    if (direction === 'LONG') longVotes++
+    else if (direction === 'SHORT') shortVotes++
+    else neutralVotes++
+    if (analysis.setup) lockedBars.push(bar)
+  }
+  const direction: Direction = longVotes === shortVotes ? 'NEUTRAL' : longVotes > shortVotes ? 'LONG' : 'SHORT'
+  const agreement = Math.round((Math.max(longVotes, shortVotes) / BARS.length) * 100)
+  return { direction, longVotes, shortVotes, neutralVotes, agreement, lockedBars }
+}
+
+export function analyzeMtf(bars: Partial<Record<Bar, Candle[]>>, tick: number, now: number): MtfState {
+  const analyses = {} as Record<Bar, Analysis>
+  for (const bar of BARS) analyses[bar] = analyze(bars[bar] || [], bar, tick, now)
+  return { analyses, alignment: alignment(analyses) }
 }

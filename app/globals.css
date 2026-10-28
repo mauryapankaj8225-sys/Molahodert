@@ -223,6 +223,8 @@
   .signal-long { border-color: #36cba230; background: linear-gradient(110deg,#36cba20d,transparent); }
   .signal-short { border-color: #f2748330; background: linear-gradient(110deg,#f274830d,transparent); }
   .entry-box { padding: 11px 13px; border: 1px solid #dfbb7040; border-left-width: 2px; border-radius: 4px; background: #dfbb7006; }
+  .mtf-grid { margin: 16px 0 0; }
+  .mtf-panel table tbody tr:last-child { border-bottom: 0; }
   .secondary-grid { display: grid; grid-template-columns: 1.1fr 1fr 1fr; gap: 16px; margin: 16px 0; }
   .secondary-grid .terminal-panel { min-height: 337px; }
   .workspace-disclaimer { display: flex; align-items: center; gap: 8px; padding: 20px 1px; font-size: 9px; line-height: 1.5; color: var(--muted-foreground); }

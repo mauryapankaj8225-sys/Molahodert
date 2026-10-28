@@ -4,7 +4,7 @@ import './globals.css'
 
 export const metadata: Metadata = {
   title: 'Omniscient — XAU/USDT Gold Terminal',
-  description: 'Real-time OKX XAU/USDT perpetual market intelligence. Verified exchange data, interactive candlesticks, closed-candle signal confirmation and transparent risk controls. No guaranteed returns.',
+  description: 'Real-time OKX XAU/USDT perpetual market intelligence across eight timeframes (1m to 4H). Verified exchange data, interactive candlesticks, immutable signal locks on closed candles and transparent risk controls. No guaranteed returns.',
   generator: 'v0.app',
   icons: {
     icon: [
