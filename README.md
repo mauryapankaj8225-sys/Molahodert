@@ -29,12 +29,32 @@ prices, so charts, tick sizes and signals never mix different markets.
 
 ## Getting started
 
+Clone and run the exact same terminal:
+
 ```bash
+git clone https://github.com/mauryapankaj8225-sys/Molahodert.git
+cd Molahodert
+
+# pnpm (recommended — the repo ships a pnpm-lock.yaml)
+corepack enable
+pnpm install
+pnpm dev
+
+# or npm
 npm install
 npm run dev
 ```
 
 Open http://localhost:3000.
+
+No API keys or configuration are required — the terminal reads only public OKX market data
+endpoints, so it works out of the box with no `.env` file.
+
+Production build:
+
+```bash
+pnpm build && pnpm start
+```
 
 ## Disclaimer
 
